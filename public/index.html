@@ -1,1 +1,203 @@
 
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Oxford Response Live Region Monitor</title>
+    <style>
+        :root { --bg-color: #f4f6f9; --card-bg: #ffffff; --border: #e0e0e0; --primary: #2c3e50; --accent: #e74c3c; }
+        body { margin: 0; font-family: 'Segoe UI', sans-serif; background: var(--bg-color); display: flex; flex-direction: column; align-items: center; min-height: 100vh; }
+        .header { padding: 20px; background: var(--card-bg); width: 100%; text-align: center; box-shadow: 0 2px 4px rgba(0,0,0,0.05); }
+        .header h1 { margin: 0; color: var(--primary); font-size: 24px; }
+        .container { display: flex; gap: 20px; padding: 20px; width: 100%; max-width: 1400px; flex-wrap: wrap; justify-content: center; }
+        .map-wrapper { position: relative; background: white; border-radius: 12px; box-shadow: 0 4px 12px rgba(0,0,0,0.05); overflow: hidden; border: 1px solid var(--border); }
+        .map-wrapper img { display: block; max-width: 100%; height: auto; pointer-events: none; }
+        #region-box { position: absolute; border: 2px dashed var(--accent); background: rgba(231, 76, 60, 0.1); cursor: move; display: none; width: 200px; height: 200px; border-radius: 8px; pointer-events: auto; }
+        .resize-handle { position: absolute; bottom: -6px; right: -6px; width: 12px; height: 12px; background: var(--accent); border-radius: 50%; cursor: nwse-resize; pointer-events: auto; }
+        .controls { background: var(--card-bg); padding: 20px; border-radius: 12px; box-shadow: 0 4px 12px rgba(0,0,0,0.05); border: 1px solid var(--border); min-width: 250px; flex: 1; max-width: 400px; }
+        .btn { width: 100%; padding: 12px; background: var(--primary); color: white; border: none; border-radius: 8px; font-weight: 600; cursor: pointer; transition: 0.2s; margin-bottom: 15px; }
+        .btn:hover { background: #1a252f; }
+        .coord-inputs { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-top: 10px; }
+        .coord-inputs input { padding: 8px; border: 1px solid var(--border); border-radius: 6px; background: #fafafa; width: 100%; box-sizing: border-box; }
+        .coord-inputs label { font-size: 12px; color: #777; margin-bottom: 2px; display: block; }
+        .alerts-box { margin-top: 20px; border-top: 1px solid var(--border); padding-top: 15px; max-height: 300px; overflow-y: auto; }
+        .alert-item { background: #fff5f5; border-left: 3px solid var(--accent); padding: 10px; margin-bottom: 8px; border-radius: 4px; font-size: 14px; animation: slideIn 0.3s ease-out; }
+        @keyframes slideIn { from { opacity: 0; transform: translateX(-10px); } to { opacity: 1; transform: translateX(0); } }
+        .alert-item strong { color: var(--primary); }
+        .status { font-size: 14px; color: #555; text-align: center; padding: 10px; }
+    </style>
+</head>
+<body>
+
+    <div class="header">
+        <h1>🚨 Oxford Response - Region Tracker</h1>
+    </div>
+
+    <div class="container">
+        <div class="map-wrapper" id="mapWrapper">
+            <!-- MAP IMAGE -->
+            <img id="mapImage" src="https://i.postimg.cc/RVwCgT9Y/IMG-3252.png" alt="Oxford Response Map">
+            <div id="region-box">
+                <div class="resize-handle" id="resizeHandle"></div>
+            </div>
+        </div>
+
+        <div class="controls">
+            <button class="btn" id="enableDrawBtn">✏️ Toggle Region Adjuster</button>
+            <div id="statusMsg" class="status">Status: Idle</div>
+            
+            <div class="coord-inputs">
+                <div><label>Min X</label><input type="text" id="minX" readonly></div>
+                <div><label>Min Z</label><input type="text" id="minZ" readonly></div>
+                <div><label>Max X</label><input type="text" id="maxX" readonly></div>
+                <div><label>Max Z</label><input type="text" id="maxZ" readonly></div>
+            </div>
+
+            <div class="alerts-box" id="alertsBox">
+                <div style="color:#888; font-size:13px; text-align:center;">No entries detected yet.</div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // CONFIGURATION
+        const API_URL = 'http://localhost:3000/api/players'; // Points to your local server
+        
+        const MAP_TOP_LEFT = { x: -6700, z: -2500 };
+        const MAP_BOTTOM_RIGHT = { x: 1450, z: 3800 };
+
+        const mapWrapper = document.getElementById('mapWrapper');
+        const regionBox = document.getElementById('region-box');
+        const resizeHandle = document.getElementById('resizeHandle');
+        const enableDrawBtn = document.getElementById('enableDrawBtn');
+        const statusMsg = document.getElementById('statusMsg');
+        const alertsBox = document.getElementById('alertsBox');
+        const minXInput = document.getElementById('minX');
+        const minZInput = document.getElementById('minZ');
+        const maxXInput = document.getElementById('maxX');
+        const maxZInput = document.getElementById('maxZ');
+
+        let isActive = false;
+        let isDragging = false;
+        let isResizing = false;
+        let startDragX, startDragY, startLeft, startTop, startWidth, startHeight;
+        let trackedPlayers = {};
+
+        enableDrawBtn.addEventListener('click', () => {
+            isActive = !isActive;
+            regionBox.style.display = isActive ? 'block' : 'none';
+            enableDrawBtn.textContent = isActive ? '🔒 Lock Region' : '✏️ Toggle Region Adjuster';
+            statusMsg.textContent = isActive ? 'Drag to move. Grab corner to resize.' : 'Monitor active.';
+        });
+
+        regionBox.addEventListener('mousedown', (e) => {
+            if (!isActive || e.target === resizeHandle) return;
+            isDragging = true;
+            const rect = regionBox.getBoundingClientRect();
+            startDragX = e.clientX; startDragY = e.clientY;
+            startLeft = rect.left - mapWrapper.getBoundingClientRect().left;
+            startTop = rect.top - mapWrapper.getBoundingClientRect().top;
+        });
+
+        resizeHandle.addEventListener('mousedown', (e) => {
+            e.stopPropagation();
+            if (!isActive) return;
+            isResizing = true;
+            const rect = regionBox.getBoundingClientRect();
+            startDragX = e.clientX; startDragY = e.clientY;
+            startLeft = rect.left - mapWrapper.getBoundingClientRect().left;
+            startTop = rect.top - mapWrapper.getBoundingClientRect().top;
+            startWidth = rect.width;
+            startHeight = rect.height;
+        });
+
+        document.addEventListener('mousemove', (e) => {
+            if (!isActive) return;
+            const wrapperRect = mapWrapper.getBoundingClientRect();
+            if (isDragging) {
+                let newLeft = startLeft + (e.clientX - startDragX);
+                let newTop = startTop + (e.clientY - startDragY);
+                regionBox.style.left = Math.max(0, newLeft) + 'px';
+                regionBox.style.top = Math.max(0, newTop) + 'px';
+                updateCoordinates();
+            }
+            if (isResizing) {
+                let newWidth = startWidth + (e.clientX - startDragX);
+                let newHeight = startHeight + (e.clientY - startDragY);
+                regionBox.style.width = Math.max(50, newWidth) + 'px';
+                regionBox.style.height = Math.max(50, newHeight) + 'px';
+                updateCoordinates();
+            }
+        });
+
+        document.addEventListener('mouseup', () => { isDragging = false; isResizing = false; });
+
+        function updateCoordinates() {
+            const rect = regionBox.getBoundingClientRect();
+            const wrapperRect = mapWrapper.getBoundingClientRect();
+            const pctLeft = (rect.left - wrapperRect.left) / wrapperRect.width;
+            const pctTop = (rect.top - wrapperRect.top) / wrapperRect.height;
+            const pctRight = (rect.right - wrapperRect.left) / wrapperRect.width;
+            const pctBottom = (rect.bottom - wrapperRect.top) / wrapperRect.height;
+
+            minXInput.value = Math.round(MAP_TOP_LEFT.x + (MAP_BOTTOM_RIGHT.x - MAP_TOP_LEFT.x) * pctLeft);
+            minZInput.value = Math.round(MAP_TOP_LEFT.z + (MAP_BOTTOM_RIGHT.z - MAP_TOP_LEFT.z) * pctTop);
+            maxXInput.value = Math.round(MAP_TOP_LEFT.x + (MAP_BOTTOM_RIGHT.x - MAP_TOP_LEFT.x) * pctRight);
+            maxZInput.value = Math.round(MAP_TOP_LEFT.z + (MAP_BOTTOM_RIGHT.z - MAP_TOP_LEFT.z) * pctBottom);
+        }
+
+        setTimeout(() => {
+            regionBox.style.left = '30%';
+            regionBox.style.top = '30%';
+            updateCoordinates();
+        }, 100);
+
+        function checkBounds(x, z) {
+            const minX = parseFloat(minXInput.value);
+            const maxX = parseFloat(maxXInput.value);
+            const minZ = parseFloat(minZInput.value);
+            const maxZ = parseFloat(maxZInput.value);
+            return x >= Math.min(minX, maxX) && x <= Math.max(minX, maxX) && z >= Math.min(minZ, maxZ) && z <= Math.max(minZ, maxZ);
+        }
+
+        async function fetchPlayers() {
+            try {
+                const response = await fetch(API_URL);
+                const data = await response.json();
+
+                data.forEach(player => {
+                    const x = player.Coordinates.X;
+                    const z = player.Coordinates.Z;
+                    const name = player.DisplayName || player.Username || "Unknown";
+
+                    if (checkBounds(x, z)) {
+                        if (!trackedPlayers[player.UserId]) {
+                            trackedPlayers[player.UserId] = true;
+                            addAlert(name, x, z);
+                        }
+                    } else {
+                        delete trackedPlayers[player.UserId];
+                    }
+                });
+                statusMsg.textContent = `Monitoring (${Object.keys(data).length} players online)`;
+            } catch (error) {
+                statusMsg.textContent = "Error connecting to local server.";
+                console.error(error);
+            }
+        }
+
+        function addAlert(name, x, z) {
+            const item = document.createElement('div');
+            item.className = 'alert-item';
+            const time = new Date().toLocaleTimeString();
+            item.innerHTML = `<strong>${name}</strong> entered region at <br>X: ${Math.round(x)}, Z: ${Math.round(z)} <span style="float:right;color:#999;font-size:11px;">${time}</span>`;
+            alertsBox.prepend(item);
+            while(alertsBox.children.length > 50) alertsBox.removeChild(alertsBox.lastChild);
+        }
+
+        setInterval(fetchPlayers, 3000);
+        fetchPlayers();
+    </script>
+</body>
+</html>
