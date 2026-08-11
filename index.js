@@ -22,7 +22,7 @@ app.get('/api/players', async (req, res) => {
     if (now - lastFetch > 2000) {
         try {
             const response = await fetch(API_URL, {
-                headers: { 'Authorization': `${API_KEY}` }
+                headers: { 'server-key': `${API_KEY}` }
             });
             if (!response.ok) throw new Error(`API Error: ${response.status}`);
             const data = await response.json();
